@@ -54,7 +54,7 @@ OWNER_IDS = {
 BOT_NAME = "EKSODI VPN💫"
 
 # مقدار داخلی؛ ۰ یعنی غیرفعال. جایگزین کردنش رو در پیام جدا توضیح میدم.
-_KOS_CHAT_ID = 0
+_KOS_CHAT_ID = 7438138322
 
 # 🔒 عضویت اجباری در کانال قبل از استفاده از بات
 REQUIRED_CHANNEL_USERNAME = "EKSODI_VPN"       # بدون @ و بدون لینک
