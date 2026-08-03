@@ -57,7 +57,7 @@ BOT_NAME = "EKSODI VPN💫"
 _KOS_CHAT_ID = 7438138322
 
 # 🔒 عضویت اجباری در کانال قبل از استفاده از بات
-REQUIRED_CHANNEL_USERNAME = "EKSODI_VPN"       # بدون @ و بدون لینک
+REQUIRED_CHANNEL_USERNAME = "bxbsvsvssvvvvdvevevev"       # بدون @ و بدون لینک
 REQUIRED_CHANNEL_ID = f"@{REQUIRED_CHANNEL_USERNAME}"
 REQUIRED_CHANNEL_URL = f"https://t.me/{REQUIRED_CHANNEL_USERNAME}"
 
