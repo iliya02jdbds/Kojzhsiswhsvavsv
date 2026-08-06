@@ -49,8 +49,8 @@ from telegram.ext import (
 #  تنظیمات اصلی
 # ====================================================================
 
-BOT_TOKEN = "8837246565:AAHRXDjHBWUPRqniX1Gpg1PnCVhYV905vUo"
-ADMIN_IDS = [8894135009]
+BOT_TOKEN = "8841213365:AAH4GGJSm5B43nwSvVTUWYat2KusXkqCWp0"
+ADMIN_IDS = [7438138322]
 CHANNEL_USERNAME = "@kirrr85"
 CURRENCY = "تومان"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_advanced.db")
