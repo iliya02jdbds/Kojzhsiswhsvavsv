@@ -63,7 +63,11 @@ def nahan_add_user(username: str, volume_gb: float = None, days: int = None, ret
             data = resp.json()
             if not data.get("success"):
                 raise NahanError(data.get("error", "خطای نامشخص پنل"))
-            return data["user"]
+            # ⚠️ subscriptionUrl هم‌سطح "user" برمی‌گرده، نه داخلش — این‌جا مرجش می‌کنیم
+            # تا هر جای دیگه‌ی بات فقط با یه دیکشنری کار کنه.
+            user = dict(data.get("user", {}))
+            user["subscriptionUrl"] = data.get("subscriptionUrl", "")
+            return user
 
         if resp.status_code == 401:
             raise NahanError("توکن پنل نامعتبره (Unauthorized) — NAHAN_API_KEY رو چک کن")
