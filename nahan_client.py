@@ -6,6 +6,7 @@
 """
 
 import os
+import time
 import uuid
 import logging
 import requests
@@ -40,10 +41,20 @@ def nahan_add_user(username: str, volume_gb: float = None, days: int = None, ret
 
     url = f"{NAHAN_BASE_URL}/{NAHAN_API_ROUTE}/api/users"
     headers = {"Authorization": f"Bearer {NAHAN_KEY}"}
+
+    # 🛠 باگ زمان نامحدود: قبلاً فقط "expiryDays" فرستاده می‌شد و اگه پنل این کلید رو
+    # نمی‌شناخت یا مقدارش float/None بود، بی‌سروصدا نادیده گرفته می‌شد و کانفیگ نامحدود می‌موند.
+    # برای اطمینان، هم تعداد روز و هم تاریخ انقضا (به میلی‌ثانیه، مطلق) رو با چند اسم رایج
+    # می‌فرستیم تا هرکدوم رو پنل بخونه، کار کنه.
+    days_int = int(days) if days else None
+    expire_ms = int(time.time() * 1000) + days_int * 86400000 if days_int else None
     payload = {
         "name": _unique_username(username),
         "trafficLimit": volume_gb,
-        "expiryDays": days,
+        "expiryDays": days_int,
+        "days": days_int,
+        "expire": expire_ms,
+        "expiryMs": expire_ms,
     }
 
     last_err = None
@@ -67,6 +78,11 @@ def nahan_add_user(username: str, volume_gb: float = None, days: int = None, ret
             # تا هر جای دیگه‌ی بات فقط با یه دیکشنری کار کنه.
             user = dict(data.get("user", {}))
             user["subscriptionUrl"] = data.get("subscriptionUrl", "")
+            if days_int and not user.get("expiryMs") and not user.get("expire"):
+                logger.warning(
+                    "[NAHAN] expiry may not have been applied by panel for user %s (requested %s days)",
+                    user.get("id"), days_int,
+                )
             return user
 
         if resp.status_code == 401:
