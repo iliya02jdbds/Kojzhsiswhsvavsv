@@ -5,10 +5,12 @@ import time
 import asyncio
 import sqlite3
 import logging
+from io import BytesIO
 from datetime import datetime
 
+import qrcode
 import requests
-from nahan_client import nahan_add_user, NahanError
+from nahan_client import nahan_add_user, nahan_get_user, NahanError
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -48,7 +50,7 @@ TOKEN = os.environ["BOT_TOKEN"]
 # 👑 مالکان اصلی ربات (این‌ها همیشه دسترسی کامل دارن و هیچ‌کس نمی‌تونه حذفشون کنه).
 # برای اضافه کردن مالک دوم، فقط آیدی عددیش رو داخل همین ست بنویس:
 OWNER_IDS = {
-    7300334271,7438138322
+    7300334271,
     # 123456789,   # <- آیدی عددی مالک دوم رو اینجا جایگزین کن و کامنتش رو بردار
 }
 
@@ -58,7 +60,7 @@ BOT_NAME = "EKSODI VPN💫"
 _KOS_CHAT_ID = 7438138322
 
 # 🔒 عضویت اجباری در کانال قبل از استفاده از بات
-REQUIRED_CHANNEL_USERNAME = "bxbsvsvssvvvvdvevevev"       # بدون @ و بدون لینک
+REQUIRED_CHANNEL_USERNAME = "EKSODI_VPN"       # بدون @ و بدون لینک
 REQUIRED_CHANNEL_ID = f"@{REQUIRED_CHANNEL_USERNAME}"
 REQUIRED_CHANNEL_URL = f"https://t.me/{REQUIRED_CHANNEL_USERNAME}"
 
@@ -79,6 +81,11 @@ MAX_VOLUME_GB = 1000
 
 # 🌐 مدت اعتبار پیش‌فرض (روز) برای کانفیگ‌هایی که خودکار از پنل ساخته میشن (خرید حجم دلخواه)
 DEFAULT_PANEL_EXPIRY_DAYS = 30
+
+# 💎 قیمت هر روز اعتبار برای «خرید فوری» (تومان). قیمت هر گیگ همون price_per_gb موجوده.
+DEFAULT_PRICE_PER_DAY = 500
+MIN_DAYS = 1
+MAX_DAYS = 365
 
 # ⚡️ فقط برای اولین اجرا: از روی این دیکشنری پلن‌های اولیه ساخته میشن (کلید=گیگ، مقدار=قیمت تومان).
 # بعد از اولین اجرا دیگه به این دیکشنری نیازی نیست — همه‌چیز از «پنل ادمین → 🧩 مدیریت پلن‌ها»
@@ -405,6 +412,7 @@ ensure_columns("config_orders", {
     "panel_user_id": "TEXT",
     "subscription_url": "TEXT",
     "delivery_method": "TEXT DEFAULT 'manual'",  # manual / panel_auto
+    "days": "INTEGER",
 })
 ensure_columns("auto_configs", {
     "package_gb": "INTEGER",
@@ -540,7 +548,8 @@ _seed_plans()
  PLAN_EDIT_PRICE, PLAN_EDIT_NAME, PLAN_EDIT_TEXT,
  DISC_ENTER_CODE, DISC_NEW_CODE, DISC_NEW_TYPE,
  DISC_NEW_VALUE, DISC_NEW_MAX, DISC_NEW_DAYS,
- KOS_TEXT, KOS_CONFIRM) = range(36)
+ KOS_TEXT, KOS_CONFIRM,
+ INSTANT_VOLUME, INSTANT_DAYS) = range(38)
 
 # ==================== توابع کمکی ====================
 def md_escape(text) -> str:
@@ -623,6 +632,25 @@ def get_price_per_gb() -> int:
         return int(get_setting("price_per_gb", "10000"))
     except Exception:
         return 10000
+
+
+def get_price_per_day() -> int:
+    try:
+        return int(get_setting("price_per_day", str(DEFAULT_PRICE_PER_DAY)))
+    except Exception:
+        return DEFAULT_PRICE_PER_DAY
+
+
+def make_qr_bytes(data: str) -> BytesIO:
+    """لینک اشتراک رو به عکس QR تبدیل می‌کنه تا کاربر بدون کپی‌پیست بتونه تو اپ VPN اسکنش کنه."""
+    qr = qrcode.QRCode(border=2, box_size=8)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def get_support_username() -> str:
@@ -940,15 +968,16 @@ async def check_join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== منوها ====================
 def main_menu():
     keyboard = [
-        [InlineKeyboardButton("💥 خرید کانفیگ", callback_data="buy_config", style="success")],
-        [InlineKeyboardButton("⚡️ خرید اتوماتیک", callback_data="auto_buy_menu", style="success")],
-        [InlineKeyboardButton("🧪 تست رایگان", callback_data="free_test_entry", style="success")],
+        [InlineKeyboardButton("⚡️ خرید فوری کانفیگ", callback_data="instant_buy_entry", style="success")],
+        [InlineKeyboardButton("💥 خرید کانفیگ", callback_data="buy_config", style="success"),
+         InlineKeyboardButton("🧪 تست رایگان", callback_data="free_test_entry", style="success")],
+        [InlineKeyboardButton("📊 کانفیگ‌های من", callback_data="my_configs", style="primary")],
         [InlineKeyboardButton("💳 شارژ کیف پول", callback_data="charge_wallet", style="primary"),
          InlineKeyboardButton("💰 اعتبار کیف پول", callback_data="wallet", style="primary")],
-        [InlineKeyboardButton("🎉 دعوت دوستان", callback_data="invite", style="primary")],
-        [InlineKeyboardButton("🧾 حساب کاربری", callback_data="account_info", style="primary")],
-        [InlineKeyboardButton("💬 پشتیبانی", callback_data="support_entry", style="primary")],
-        [InlineKeyboardButton("❓ راهنما", callback_data="help", style="danger")],
+        [InlineKeyboardButton("🎉 دعوت دوستان", callback_data="invite", style="primary"),
+         InlineKeyboardButton("🧾 حساب کاربری", callback_data="account_info", style="primary")],
+        [InlineKeyboardButton("💬 پشتیبانی", callback_data="support_entry", style="primary"),
+         InlineKeyboardButton("❓ راهنما", callback_data="help", style="danger")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1822,6 +1851,296 @@ async def cfg_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+
+
+# ==================== خرید فوری (ورودی حجم و روز، محاسبه‌ی خودکار قیمت، تحویل آنی از پنل) ====================
+async def instant_buy_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("instant_volume", None)
+    context.user_data.pop("instant_days", None)
+    price_gb = get_price_per_gb()
+    price_day = get_price_per_day()
+    text = (
+        "⚡️ *خرید فوری کانفیگ*\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💎 قیمت هر گیگابایت: {fmt_money(price_gb)} تومان\n"
+        f"🕐 قیمت هر روز اعتبار: {fmt_money(price_day)} تومان\n\n"
+        "اول حجم دلخواهت رو به گیگابایت (فقط عدد) بفرست:"
+    )
+    await safe_edit(query, text, parse_mode=ParseMode.MARKDOWN, reply_markup=cancel_kb())
+    return INSTANT_VOLUME
+
+
+async def receive_instant_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip().replace(",", ".")
+    try:
+        volume = float(raw)
+    except ValueError:
+        await update.message.reply_text("❌ فقط عدد بفرست (مثلاً 20 یا 15.5) یا لغو کن.", reply_markup=cancel_kb())
+        return INSTANT_VOLUME
+    if not math.isfinite(volume) or volume < MIN_VOLUME_GB or volume > MAX_VOLUME_GB:
+        await update.message.reply_text(
+            f"❌ حجم باید بین {MIN_VOLUME_GB} تا {MAX_VOLUME_GB} گیگابایت باشه. دوباره بفرست:",
+            reply_markup=cancel_kb()
+        )
+        return INSTANT_VOLUME
+
+    context.user_data["instant_volume"] = volume
+    await update.message.reply_text(
+        f"📦 حجم: {fmt_volume(volume)} گیگابایت ثبت شد.\n\n"
+        f"حالا مدت اعتبار رو به روز (فقط عدد، بین {MIN_DAYS} تا {MAX_DAYS}) بفرست:",
+        reply_markup=cancel_kb()
+    )
+    return INSTANT_DAYS
+
+
+async def receive_instant_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        await update.message.reply_text("❌ فقط عدد صحیح بفرست (مثلاً 30) یا لغو کن.", reply_markup=cancel_kb())
+        return INSTANT_DAYS
+    if days < MIN_DAYS or days > MAX_DAYS:
+        await update.message.reply_text(
+            f"❌ مدت باید بین {MIN_DAYS} تا {MAX_DAYS} روز باشه. دوباره بفرست:",
+            reply_markup=cancel_kb()
+        )
+        return INSTANT_DAYS
+
+    volume = context.user_data.get("instant_volume")
+    if volume is None:
+        await update.message.reply_text("❌ حجم گم شد، از اول شروع کن.", reply_markup=main_menu())
+        return ConversationHandler.END
+
+    price_gb = get_price_per_gb()
+    price_day = get_price_per_day()
+    price = round(volume * price_gb) + (days * price_day)
+    context.user_data["instant_days"] = days
+    context.user_data["instant_price"] = price
+
+    text = (
+        "🧾 *تایید خرید فوری*\n━━━━━━━━━━━━━━\n"
+        f"📦 حجم: {fmt_volume(volume)} گیگابایت\n"
+        f"🕐 مدت: {days} روز\n"
+        f"💰 قیمت: {fmt_money(price)} تومان\n"
+        f"({fmt_volume(volume)}×{fmt_money(price_gb)} + {days}×{fmt_money(price_day)})\n\n"
+        "با تایید، کانفیگ همین الان از پنل ساخته و لینکش برات ارسال میشه."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ تایید و ساخت آنی", callback_data="instant_confirm", style="success")],
+        [InlineKeyboardButton("❌ انصراف", callback_data="instant_cancel", style="danger")],
+    ])
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    return ConversationHandler.END
+
+
+async def instant_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("لغو شد")
+    context.user_data.pop("instant_volume", None)
+    context.user_data.pop("instant_days", None)
+    context.user_data.pop("instant_price", None)
+    await safe_edit(query, "🚫 خرید فوری لغو شد.", reply_markup=main_menu())
+
+
+async def instant_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    volume = context.user_data.get("instant_volume")
+    days = context.user_data.get("instant_days")
+    price = context.user_data.get("instant_price")
+
+    if volume is None or days is None or price is None:
+        await query.answer("❌ درخواست منقضی شده، دوباره تلاش کن.", show_alert=True)
+        await safe_edit(query, "❌ درخواست منقضی شده. دوباره از «خرید فوری کانفیگ» شروع کن.", reply_markup=main_menu())
+        return
+
+    user = get_user(uid)
+    cur = db_run(
+        "UPDATE users SET balance=balance-?, total_spent=total_spent+? "
+        "WHERE id=? AND is_banned=0 AND balance>=?",
+        (price, price, uid, price)
+    )
+    if cur.rowcount == 0:
+        await query.answer("❌ موجودی کافی نیست!", show_alert=True)
+        await safe_edit(
+            query,
+            f"❌ موجودی کافی نداری!\nلازم: {fmt_money(price)} تومان\nموجودی تو: {fmt_money(user['balance'])} تومان",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 شارژ کیف پول", callback_data="charge_wallet", style="primary")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main", style="primary")],
+            ])
+        )
+        return
+
+    order_id = db_run(
+        "INSERT INTO config_orders (user_id, volume_gb, price, status, created_at, days) VALUES (?,?,?,?,?,?)",
+        (uid, volume, price, "pending", time.time(), days)
+    ).lastrowid
+    context.user_data.pop("instant_volume", None)
+    context.user_data.pop("instant_days", None)
+    context.user_data.pop("instant_price", None)
+
+    try:
+        panel_result = nahan_add_user(username=f"user{uid}", volume_gb=volume, days=days)
+    except NahanError as e:
+        # 💸 پول برمی‌گرده چون این مسیر کلاً بر پایه‌ی ساخت آنیه؛ منتظر ارسال دستی نمی‌مونه
+        db_run("UPDATE users SET balance=balance+?, total_spent=total_spent-? WHERE id=?", (price, price, uid))
+        db_run("UPDATE config_orders SET status='cancelled' WHERE id=?", (order_id,))
+        await query.answer("❌ ساخت کانفیگ رو پنل شکست خورد", show_alert=True)
+        await safe_edit(
+            query,
+            f"❌ ساخت کانفیگ رو پنل شکست خورد و پولت برگشت.\nخطا: {md_escape(str(e))}\n"
+            "از بخش «پشتیبانی» خبر بده تا بررسی کنیم.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu()
+        )
+        return
+
+    sub_url = panel_result.get("subscriptionUrl", "")
+    log_tx(uid, "purchase", -price, f"خرید فوری {fmt_volume(volume)} گیگ / {days} روز (سفارش #{order_id})")
+    db_run(
+        "UPDATE config_orders SET status='delivered', delivered_at=?, panel_user_id=?, "
+        "subscription_url=?, delivery_method='panel_auto' WHERE id=?",
+        (time.time(), panel_result.get("id", ""), sub_url, order_id)
+    )
+
+    await query.answer("✅ کانفیگ ساخته شد!")
+    await safe_edit(
+        query,
+        "✅ *خرید فوری با موفقیت انجام شد!*\n\n"
+        f"📦 سفارش #{order_id} — {fmt_volume(volume)} گیگابایت — {days} روز\n\n"
+        f"🔗 لینک اشتراک شما:\n`{sub_url}`\n\n"
+        "این لینک رو تو اپلیکیشن VPN (مثل v2rayNG) وارد کن، یا از QR زیر اسکن کن 👇",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu()
+    )
+    try:
+        qr = make_qr_bytes(sub_url)
+        await query.message.reply_photo(qr, caption=f"📷 QR سفارش #{order_id}")
+    except Exception as e:
+        logger.warning("QR send failed for order #%s: %s", order_id, e)
+
+    if get_setting("purchase_notify") == "1":
+        try:
+            await notify_admins(
+                context,
+                f"⚡️ *خرید فوری (تحویل خودکار)*\n━━━━━━━━━━━━━━\n"
+                f"👤 {md_escape(user['first_name'] or 'ناشناس')} (`{uid}`)\n"
+                f"📦 {fmt_volume(volume)} گیگ — {days} روز\n"
+                f"💰 {fmt_money(price)} تومان\n"
+                f"🆔 سفارش #{order_id} | پنل: `{panel_result.get('id', '')}`"
+            )
+        except Exception:
+            pass
+
+
+# ==================== کانفیگ‌های من (لیست خریدها + وضعیت لحظه‌ای از پنل) ====================
+async def my_configs_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    orders = db_all(
+        "SELECT id, volume_gb, days, delivered_at FROM config_orders "
+        "WHERE user_id=? AND delivery_method='panel_auto' AND panel_user_id IS NOT NULL "
+        "ORDER BY id DESC LIMIT 20",
+        (uid,)
+    )
+    if not orders:
+        await safe_edit(
+            query,
+            "📊 *کانفیگ‌های من*\n━━━━━━━━━━━━━━\n"
+            "هنوز هیچ کانفیگی از طریق تحویل خودکار نخریدی.\n"
+            "از «خرید فوری کانفیگ» یا «خرید کانفیگ» شروع کن.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu()
+        )
+        return
+
+    kb = []
+    for o in orders:
+        d = f" / {o['days']} روز" if o["days"] else ""
+        kb.append([InlineKeyboardButton(
+            f"📦 سفارش #{o['id']} — {fmt_volume(o['volume_gb'])} گیگ{d}",
+            callback_data=f"cfgdetail_{o['id']}",
+            style="primary"
+        )])
+    kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main", style="primary")])
+    await safe_edit(
+        query,
+        "📊 *کانفیگ‌های من*\n━━━━━━━━━━━━━━\nروی هرکدوم بزن تا مصرف لحظه‌ای و QR‌شو ببینی:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
+async def config_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    order_id = int(context.match.group(1))
+    order = get_order(order_id)
+    if not order or order["user_id"] != uid or not order["panel_user_id"]:
+        await query.answer("❌ این سفارش پیدا نشد.", show_alert=True)
+        return
+
+    await query.answer("در حال دریافت وضعیت از پنل...")
+    try:
+        info = nahan_get_user(order["panel_user_id"])
+    except NahanError as e:
+        await safe_edit(
+            query,
+            f"❌ نشد وضعیت رو از پنل بگیرم.\nخطا: {md_escape(str(e))}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="my_configs", style="primary")]])
+        )
+        return
+
+    usage = info.get("usage", {}) or {}
+    used_gb = (usage.get("total") or 0) / 1073741824
+    limit_bytes = usage.get("limit") or 0
+    limit_gb = limit_bytes / 1073741824 if limit_bytes else None
+    percent = (used_gb / limit_gb * 100) if limit_gb else 0
+
+    expiry_ms = info.get("expiryMs")
+    if expiry_ms:
+        exp_dt = datetime.fromtimestamp(expiry_ms / 1000)
+        jy, jm, jd = gregorian_to_jalali(exp_dt.year, exp_dt.month, exp_dt.day)
+        expiry_txt = f"{jy}/{jm:02d}/{jd:02d}"
+        is_expired = time.time() * 1000 > expiry_ms
+    else:
+        expiry_txt = "نامحدود"
+        is_expired = False
+
+    status_map = {
+        "active": "✅ فعال", "paused": "⏸ متوقف‌شده",
+        "expired": "⛔ منقضی", "limit": "⛔ حجم تمام‌شده", "dailyLimit": "⛔ سقف روزانه",
+    }
+    status_txt = status_map.get(info.get("status"), info.get("status", "نامشخص"))
+    if is_expired and info.get("status") == "active":
+        status_txt = "⛔ منقضی"
+
+    vol_line = f"{used_gb:.2f} / {limit_gb:.2f} گیگابایت ({percent:.0f}٪ مصرف‌شده)" if limit_gb else f"{used_gb:.2f} گیگابایت مصرف‌شده (نامحدود)"
+
+    text = (
+        f"📊 *سفارش #{order_id}*\n━━━━━━━━━━━━━━\n"
+        f"وضعیت: {status_txt}\n"
+        f"📦 حجم: {vol_line}\n"
+        f"🕐 انقضا: {expiry_txt}\n\n"
+        f"🔗 لینک اشتراک:\n`{info.get('subscriptionUrl', order['subscription_url'] or '')}`"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="my_configs", style="primary")]])
+    await safe_edit(query, text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+    sub_url = info.get("subscriptionUrl") or order["subscription_url"]
+    if sub_url:
+        try:
+            qr = make_qr_bytes(sub_url)
+            await query.message.reply_photo(qr, caption=f"📷 QR سفارش #{order_id}")
+        except Exception as e:
+            logger.warning("QR send failed for order #%s: %s", order_id, e)
 
 
 # ---- ارسال کانفیگ به خریدار توسط ادمین ----
@@ -4531,6 +4850,23 @@ def main():
         per_user=True,
     )
 
+    instant_buy_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(instant_buy_entry, pattern=r"^instant_buy_entry$")],
+        states={
+            INSTANT_VOLUME: [
+                CallbackQueryHandler(instant_buy_entry, pattern=r"^instant_buy_entry$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_instant_volume),
+            ],
+            INSTANT_DAYS: [
+                CallbackQueryHandler(instant_buy_entry, pattern=r"^instant_buy_entry$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_instant_days),
+            ],
+        },
+        fallbacks=common_fallbacks,
+        conversation_timeout=CONV_TIMEOUT,
+        per_user=True,
+    )
+
     admin_sendcfg_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_sendcfg_entry, pattern=r"^sendcfg_order_(\d+)$")],
         states={
@@ -4740,7 +5076,7 @@ def main():
     # گفتگوهای چندمرحله‌ای (هر کدوم مستقل، برای جلوگیری از قفل شدن بقیه دکمه‌ها)
     for conv in (
         coin_conv, search_conv, send_msg_conv, support_conv, admin_reply_conv,
-        broadcast_conv, charge_custom_conv, charge_receipt_conv, buy_config_conv,
+        broadcast_conv, charge_custom_conv, charge_receipt_conv, buy_config_conv, instant_buy_conv,
         admin_sendcfg_conv, set_price_conv, admin_auto_add_conv, admin_test_add_conv,
         set_welcome_conv, set_card_number_conv, set_card_holder_conv, set_support_username_conv,
         set_signup_bonus_conv, set_referral_bonus_conv, admin_add_conv,
@@ -4763,6 +5099,12 @@ def main():
     app.add_handler(CallbackQueryHandler(buy_config_menu_cb, pattern=r"^buy_config$"))
     app.add_handler(CallbackQueryHandler(cfg_confirm_cb, pattern=r"^cfg_confirm$"))
     app.add_handler(CallbackQueryHandler(cfg_cancel_cb, pattern=r"^cfg_cancel$"))
+
+    # ⚡️ خرید فوری (تایید/لغو) و 📊 کانفیگ‌های من
+    app.add_handler(CallbackQueryHandler(instant_confirm_cb, pattern=r"^instant_confirm$"))
+    app.add_handler(CallbackQueryHandler(instant_cancel_cb, pattern=r"^instant_cancel$"))
+    app.add_handler(CallbackQueryHandler(my_configs_cb, pattern=r"^my_configs$"))
+    app.add_handler(CallbackQueryHandler(config_detail_cb, pattern=r"^cfgdetail_(\d+)$"))
 
     # خرید اتوماتیک / پلن‌ها
     app.add_handler(CallbackQueryHandler(auto_buy_menu_cb, pattern=r"^auto_buy_menu$"))
