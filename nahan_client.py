@@ -42,7 +42,7 @@ def nahan_add_user(username: str, volume_gb: float = None, days: int = None, ret
     headers = {"Authorization": f"Bearer {NAHAN_KEY}"}
     payload = {
         "name": _unique_username(username),
-        "trafficLimitGB": volume_gb,
+        "trafficLimit": volume_gb,
         "expiryDays": days,
     }
 
