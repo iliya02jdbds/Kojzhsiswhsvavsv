@@ -413,6 +413,7 @@ ensure_columns("config_orders", {
     "subscription_url": "TEXT",
     "delivery_method": "TEXT DEFAULT 'manual'",  # manual / panel_auto
     "days": "INTEGER",
+    "config_name": "TEXT",
 })
 ensure_columns("auto_configs", {
     "package_gb": "INTEGER",
@@ -549,7 +550,7 @@ _seed_plans()
  DISC_ENTER_CODE, DISC_NEW_CODE, DISC_NEW_TYPE,
  DISC_NEW_VALUE, DISC_NEW_MAX, DISC_NEW_DAYS,
  KOS_TEXT, KOS_CONFIRM,
- INSTANT_VOLUME, INSTANT_DAYS) = range(38)
+ INSTANT_VOLUME, INSTANT_DAYS, INSTANT_NAME) = range(39)
 
 # ==================== توابع کمکی ====================
 def md_escape(text) -> str:
@@ -969,9 +970,8 @@ async def check_join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main_menu():
     keyboard = [
         [InlineKeyboardButton("⚡️ خرید فوری کانفیگ", callback_data="instant_buy_entry", style="success")],
-        [InlineKeyboardButton("💥 خرید کانفیگ", callback_data="buy_config", style="success"),
+        [InlineKeyboardButton("📊 کانفیگ‌های من", callback_data="my_configs", style="primary"),
          InlineKeyboardButton("🧪 تست رایگان", callback_data="free_test_entry", style="success")],
-        [InlineKeyboardButton("📊 کانفیگ‌های من", callback_data="my_configs", style="primary")],
         [InlineKeyboardButton("💳 شارژ کیف پول", callback_data="charge_wallet", style="primary"),
          InlineKeyboardButton("💰 اعتبار کیف پول", callback_data="wallet", style="primary")],
         [InlineKeyboardButton("🎉 دعوت دوستان", callback_data="invite", style="primary"),
@@ -997,8 +997,6 @@ def _cnt(label: str, n: int) -> str:
 def admin_menu():
     po, pd, un = _admin_attention_counts()
     keyboard = [
-        [InlineKeyboardButton("🧩 پلن‌ها و قیمت‌ها", callback_data="admin_plans_menu", style="success"),
-         InlineKeyboardButton("🎟 کدهای تخفیف", callback_data="admin_discounts", style="success")],
         [InlineKeyboardButton(_cnt("📥 سفارش‌های در انتظار", po), callback_data="admin_pending_orders", style="primary"),
          InlineKeyboardButton(_cnt("💳 درخواست‌های شارژ", pd), callback_data="admin_deposits", style="primary")],
         [InlineKeyboardButton("⚡️ انبار کانفیگ‌ها", callback_data="admin_auto_menu", style="primary"),
@@ -1191,8 +1189,8 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "❓ *راهنمای استفاده*\n"
         "━━━━━━━━━━━━━━\n"
-        "💥 از «خرید کانفیگ» حجم دلخواهت رو انتخاب و پرداخت کن\n\n"
-        "⚡️ از «خرید اتوماتیک» یکی از پکیج‌های آماده رو بگیر و آنی تحویل بگیر\n\n"
+        "⚡️ از «خرید فوری کانفیگ» حجم و زمان دلخواهت رو انتخاب کن، همون لحظه کانفیگ ساخته و تحویل داده میشه\n\n"
+        "📊 از «کانفیگ‌های من» مصرف لحظه‌ای و QR کانفیگ‌هایی که خریدی رو ببین\n\n"
         "🧪 از «تست رایگان» یه کانفیگ تست، فقط یک‌بار و رایگان بگیر\n\n"
         "💳 از «شارژ کیف پول» حساب خودت رو شارژ کن\n\n"
         "💰 موجودی و تاریخچه در «اعتبار کیف پول»\n\n"
@@ -1473,21 +1471,35 @@ async def receive_charge_receipt(update: Update, context: ContextTypes.DEFAULT_T
                 f"💰 مبلغ: {fmt_money(amount)} تومان\n"
                 f"📎 نوع فیش: {receipt_type}"
             )
+            if note and receipt_type != "متن":
+                info += f"\n📝 توضیح: {md_escape(note)}"
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ تایید", callback_data=f"dep_approve_{dep_id}", style="success"),
                  InlineKeyboardButton("❌ رد", callback_data=f"dep_reject_{dep_id}", style="danger")],
             ])
-            await notify_admins(context, info, reply_markup=kb)
-            admin_notified = True
+            # 📎 فیش (عکس/گیف) و دکمه‌های تایید/رد توی یه پیام واحد میره تا از پیام جدا گیج‌کننده جلوگیری بشه
+            sent_ok = False
             for aid in admin_ids():
                 try:
-                    await context.bot.copy_message(
-                        chat_id=aid,
-                        from_chat_id=update.effective_chat.id,
-                        message_id=update.message.message_id,
-                    )
+                    if update.message.photo:
+                        await context.bot.send_photo(
+                            aid, photo=update.message.photo[-1].file_id,
+                            caption=info, parse_mode=ParseMode.MARKDOWN, reply_markup=kb,
+                        )
+                    elif update.message.animation:
+                        await context.bot.send_animation(
+                            aid, animation=update.message.animation.file_id,
+                            caption=info, parse_mode=ParseMode.MARKDOWN, reply_markup=kb,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            aid, f"{info}\n📝 متن فیش:\n{md_escape(note)}",
+                            parse_mode=ParseMode.MARKDOWN, reply_markup=kb,
+                        )
+                    sent_ok = True
                 except Exception as e:
-                    logger.warning("could not forward receipt to admin %s: %s", aid, e)
+                    logger.warning("could not send deposit receipt to admin %s: %s", aid, e)
+            admin_notified = sent_ok
         except Exception as e:
             logger.warning("could not send deposit info to admins: %s", e)
     else:
@@ -1859,6 +1871,8 @@ async def instant_buy_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data.pop("instant_volume", None)
     context.user_data.pop("instant_days", None)
+    context.user_data.pop("instant_name", None)
+    context.user_data.pop("instant_price", None)
     price_gb = get_price_per_gb()
     price_day = get_price_per_day()
     text = (
@@ -1914,16 +1928,45 @@ async def receive_instant_days(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ حجم گم شد، از اول شروع کن.", reply_markup=main_menu())
         return ConversationHandler.END
 
+    context.user_data["instant_days"] = days
+    await update.message.reply_text(
+        f"🕐 مدت: {days} روز ثبت شد.\n\n"
+        "حالا یه اسم دلخواه برای کانفیگت بفرست (فقط حروف انگلیسی، عدد، خط تیره یا زیرخط — بین ۳ تا ۳۲ کاراکتر).\n"
+        "این اسم فقط برای شناسایی خودت روی کانفیگه:",
+        reply_markup=cancel_kb()
+    )
+    return INSTANT_NAME
+
+
+_VALID_CONFIG_NAME = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+
+
+async def receive_instant_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    if not _VALID_CONFIG_NAME.match(raw):
+        await update.message.reply_text(
+            "❌ اسم نامعتبره. فقط حروف انگلیسی، عدد، خط تیره یا زیرخط، بین ۳ تا ۳۲ کاراکتر (مثلاً: nima_vpn). دوباره بفرست:",
+            reply_markup=cancel_kb()
+        )
+        return INSTANT_NAME
+
+    volume = context.user_data.get("instant_volume")
+    days = context.user_data.get("instant_days")
+    if volume is None or days is None:
+        await update.message.reply_text("❌ اطلاعات گم شد، از اول شروع کن.", reply_markup=main_menu())
+        return ConversationHandler.END
+
     price_gb = get_price_per_gb()
     price_day = get_price_per_day()
     price = round(volume * price_gb) + (days * price_day)
-    context.user_data["instant_days"] = days
+    context.user_data["instant_name"] = raw
     context.user_data["instant_price"] = price
 
     text = (
         "🧾 *تایید خرید فوری*\n━━━━━━━━━━━━━━\n"
         f"📦 حجم: {fmt_volume(volume)} گیگابایت\n"
         f"🕐 مدت: {days} روز\n"
+        f"🏷 اسم کانفیگ: `{raw}`\n"
         f"💰 قیمت: {fmt_money(price)} تومان\n"
         f"({fmt_volume(volume)}×{fmt_money(price_gb)} + {days}×{fmt_money(price_day)})\n\n"
         "با تایید، کانفیگ همین الان از پنل ساخته و لینکش برات ارسال میشه."
@@ -1941,6 +1984,7 @@ async def instant_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("لغو شد")
     context.user_data.pop("instant_volume", None)
     context.user_data.pop("instant_days", None)
+    context.user_data.pop("instant_name", None)
     context.user_data.pop("instant_price", None)
     await safe_edit(query, "🚫 خرید فوری لغو شد.", reply_markup=main_menu())
 
@@ -1951,6 +1995,7 @@ async def instant_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     volume = context.user_data.get("instant_volume")
     days = context.user_data.get("instant_days")
     price = context.user_data.get("instant_price")
+    config_name = context.user_data.get("instant_name") or f"user{uid}"
 
     if volume is None or days is None or price is None:
         await query.answer("❌ درخواست منقضی شده، دوباره تلاش کن.", show_alert=True)
@@ -1976,15 +2021,16 @@ async def instant_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     order_id = db_run(
-        "INSERT INTO config_orders (user_id, volume_gb, price, status, created_at, days) VALUES (?,?,?,?,?,?)",
-        (uid, volume, price, "pending", time.time(), days)
+        "INSERT INTO config_orders (user_id, volume_gb, price, status, created_at, days, config_name) VALUES (?,?,?,?,?,?,?)",
+        (uid, volume, price, "pending", time.time(), days, config_name)
     ).lastrowid
     context.user_data.pop("instant_volume", None)
     context.user_data.pop("instant_days", None)
+    context.user_data.pop("instant_name", None)
     context.user_data.pop("instant_price", None)
 
     try:
-        panel_result = nahan_add_user(username=f"user{uid}", volume_gb=volume, days=days)
+        panel_result = nahan_add_user(username=config_name, volume_gb=volume, days=days)
     except NahanError as e:
         # 💸 پول برمی‌گرده چون این مسیر کلاً بر پایه‌ی ساخت آنیه؛ منتظر ارسال دستی نمی‌مونه
         db_run("UPDATE users SET balance=balance+?, total_spent=total_spent-? WHERE id=?", (price, price, uid))
@@ -2008,20 +2054,28 @@ async def instant_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
     await query.answer("✅ کانفیگ ساخته شد!")
-    await safe_edit(
-        query,
+    try:
+        await safe_edit(query, "✅ خرید فوری با موفقیت انجام شد! کانفیگ داره برات ارسال میشه...", reply_markup=None)
+    except Exception:
+        pass
+
+    # 📎 QR و اطلاعات کانفیگ توی یه پیام واحد (عکس + کپشن) میره تا چسبیده به هم باشن و کاربر گیج نشه
+    caption = (
         "✅ *خرید فوری با موفقیت انجام شد!*\n\n"
-        f"📦 سفارش #{order_id} — {fmt_volume(volume)} گیگابایت — {days} روز\n\n"
-        f"🔗 لینک اشتراک شما:\n`{sub_url}`\n\n"
-        "این لینک رو تو اپلیکیشن VPN (مثل v2rayNG) وارد کن، یا از QR زیر اسکن کن 👇",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_menu()
+        f"📦 سفارش #{order_id}\n"
+        f"🏷 اسم کانفیگ: `{config_name}`\n"
+        f"📊 حجم: {fmt_volume(volume)} گیگابایت — 🕐 مدت: {days} روز\n\n"
+        f"🔗 لینک اشتراک:\n`{sub_url}`\n\n"
+        "لینک بالا رو تو اپ VPN (مثل v2rayNG) وارد کن، یا همین QR رو اسکن کن 👆"
     )
     try:
         qr = make_qr_bytes(sub_url)
-        await query.message.reply_photo(qr, caption=f"📷 QR سفارش #{order_id}")
+        await query.message.reply_photo(qr, caption=caption, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.warning("QR send failed for order #%s: %s", order_id, e)
+        # اگه ساخت/ارسال QR شکست بخوره، حداقل خود لینک به‌صورت متنی بره تا کاربر بی‌جواب نمونه
+        await query.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN)
+    await query.message.reply_text("منوی اصلی:", reply_markup=main_menu())
 
     if get_setting("purchase_notify") == "1":
         try:
@@ -2043,7 +2097,7 @@ async def my_configs_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = query.from_user.id
     orders = db_all(
-        "SELECT id, volume_gb, days, delivered_at FROM config_orders "
+        "SELECT id, volume_gb, days, delivered_at, config_name FROM config_orders "
         "WHERE user_id=? AND delivery_method='panel_auto' AND panel_user_id IS NOT NULL "
         "ORDER BY id DESC LIMIT 20",
         (uid,)
@@ -2052,8 +2106,8 @@ async def my_configs_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(
             query,
             "📊 *کانفیگ‌های من*\n━━━━━━━━━━━━━━\n"
-            "هنوز هیچ کانفیگی از طریق تحویل خودکار نخریدی.\n"
-            "از «خرید فوری کانفیگ» یا «خرید کانفیگ» شروع کن.",
+            "هنوز هیچ کانفیگی نخریدی.\n"
+            "از «خرید فوری کانفیگ» شروع کن.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=main_menu()
         )
@@ -2062,8 +2116,9 @@ async def my_configs_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = []
     for o in orders:
         d = f" / {o['days']} روز" if o["days"] else ""
+        name = f" ({o['config_name']})" if o["config_name"] else ""
         kb.append([InlineKeyboardButton(
-            f"📦 سفارش #{o['id']} — {fmt_volume(o['volume_gb'])} گیگ{d}",
+            f"📦 #{o['id']}{name} — {fmt_volume(o['volume_gb'])} گیگ{d}",
             callback_data=f"cfgdetail_{o['id']}",
             style="primary"
         )])
@@ -2124,23 +2179,32 @@ async def config_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     vol_line = f"{used_gb:.2f} / {limit_gb:.2f} گیگابایت ({percent:.0f}٪ مصرف‌شده)" if limit_gb else f"{used_gb:.2f} گیگابایت مصرف‌شده (نامحدود)"
 
-    text = (
+    name_line = f"🏷 اسم کانفیگ: `{order['config_name']}`\n" if order["config_name"] else ""
+    sub_url = info.get("subscriptionUrl") or order["subscription_url"]
+    caption = (
         f"📊 *سفارش #{order_id}*\n━━━━━━━━━━━━━━\n"
+        f"{name_line}"
         f"وضعیت: {status_txt}\n"
         f"📦 حجم: {vol_line}\n"
         f"🕐 انقضا: {expiry_txt}\n\n"
-        f"🔗 لینک اشتراک:\n`{info.get('subscriptionUrl', order['subscription_url'] or '')}`"
+        f"🔗 لینک اشتراک:\n`{sub_url or ''}`"
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="my_configs", style="primary")]])
-    await safe_edit(query, text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
-    sub_url = info.get("subscriptionUrl") or order["subscription_url"]
+    try:
+        await safe_edit(query, "در حال آماده‌سازی...", reply_markup=None)
+    except Exception:
+        pass
+
+    # 📎 QR و اطلاعات لحظه‌ای مصرف توی یه پیام واحد میره (چسبیده به هم) تا کاربر گیج نشه
     if sub_url:
         try:
             qr = make_qr_bytes(sub_url)
-            await query.message.reply_photo(qr, caption=f"📷 QR سفارش #{order_id}")
+            await query.message.reply_photo(qr, caption=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            return
         except Exception as e:
             logger.warning("QR send failed for order #%s: %s", order_id, e)
+    await query.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
 # ---- ارسال کانفیگ به خریدار توسط ادمین ----
@@ -3453,7 +3517,7 @@ async def free_test_entry_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "هر کاربر فقط یک‌بار می‌تونه کانفیگ تست بگیره.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💥 خرید کانفیگ", callback_data="buy_config", style="success")],
+                [InlineKeyboardButton("⚡️ خرید فوری کانفیگ", callback_data="instant_buy_entry", style="success")],
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main", style="primary")],
             ])
         )
@@ -3528,9 +3592,9 @@ async def free_test_claim_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _log_test_attempt(uid, "claim", ok=False, extra="no_stock")
             await safe_edit(
                 query,
-                "😔 فعلاً کانفیگ تستی موجود نیست.\nبعداً دوباره امتحان کن یا از «خرید کانفیگ» استفاده کن.",
+                "😔 فعلاً کانفیگ تستی موجود نیست.\nبعداً دوباره امتحان کن یا از «خرید فوری کانفیگ» استفاده کن.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💥 خرید کانفیگ", callback_data="buy_config", style="success")],
+                    [InlineKeyboardButton("⚡️ خرید فوری کانفیگ", callback_data="instant_buy_entry", style="success")],
                     [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main", style="primary")],
                 ])
             )
@@ -3603,7 +3667,7 @@ async def free_test_claim_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await safe_edit(
         query,
         "✅ *کانفیگ تست ارسال شد!*\n\nامیدواریم از کیفیت سرویس راضی باشی 🌟\n"
-        "برای استفاده کامل می‌تونی از «خرید کانفیگ» یا «خرید اتوماتیک» استفاده کنی.",
+        "برای استفاده کامل می‌تونی از «خرید فوری کانفیگ» استفاده کنی.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_menu()
     )
@@ -3770,6 +3834,7 @@ CONV_KEYS = (
     "send_msg_target", "reply_target_uid", "order_target_id", "order_target_uid",
     "auto_add_plan", "plan_edit_id", "plan_new_name", "plan_new_price",
     "disc_ask", "dnew", "conv_return",
+    "instant_volume", "instant_days", "instant_name", "instant_price",
 )
 
 
@@ -4839,16 +4904,7 @@ def main():
         per_user=True,
     )
 
-    buy_config_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(buy_config_entry, pattern=r"^buy_custom_volume$")],
-        states={ASK_VOLUME: [
-            CallbackQueryHandler(buy_config_entry, pattern=r"^buy_custom_volume$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_volume),
-        ]},
-        fallbacks=common_fallbacks,
-        conversation_timeout=CONV_TIMEOUT,
-        per_user=True,
-    )
+    # 🗑 «خرید کانفیگ» قدیمی (پلن‌های آماده + حجم دلخواه) حذف شد — فقط «خرید فوری» موجوده.
 
     instant_buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(instant_buy_entry, pattern=r"^instant_buy_entry$")],
@@ -4860,6 +4916,9 @@ def main():
             INSTANT_DAYS: [
                 CallbackQueryHandler(instant_buy_entry, pattern=r"^instant_buy_entry$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_instant_days),
+            ],
+            INSTANT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_instant_name),
             ],
         },
         fallbacks=common_fallbacks,
@@ -5076,7 +5135,7 @@ def main():
     # گفتگوهای چندمرحله‌ای (هر کدوم مستقل، برای جلوگیری از قفل شدن بقیه دکمه‌ها)
     for conv in (
         coin_conv, search_conv, send_msg_conv, support_conv, admin_reply_conv,
-        broadcast_conv, charge_custom_conv, charge_receipt_conv, buy_config_conv, instant_buy_conv,
+        broadcast_conv, charge_custom_conv, charge_receipt_conv, instant_buy_conv,
         admin_sendcfg_conv, set_price_conv, admin_auto_add_conv, admin_test_add_conv,
         set_welcome_conv, set_card_number_conv, set_card_holder_conv, set_support_username_conv,
         set_signup_bonus_conv, set_referral_bonus_conv, admin_add_conv,
@@ -5094,11 +5153,6 @@ def main():
     app.add_handler(CallbackQueryHandler(noop_cb, pattern=r"^noop$"))
     app.add_handler(CallbackQueryHandler(tx_history, pattern=r"^tx_history$"))
     app.add_handler(CallbackQueryHandler(support_entry_cb, pattern=r"^support_entry$"))
-
-    # خرید کانفیگ (منوی پلن‌ها + حجم دلخواه)
-    app.add_handler(CallbackQueryHandler(buy_config_menu_cb, pattern=r"^buy_config$"))
-    app.add_handler(CallbackQueryHandler(cfg_confirm_cb, pattern=r"^cfg_confirm$"))
-    app.add_handler(CallbackQueryHandler(cfg_cancel_cb, pattern=r"^cfg_cancel$"))
 
     # ⚡️ خرید فوری (تایید/لغو) و 📊 کانفیگ‌های من
     app.add_handler(CallbackQueryHandler(instant_confirm_cb, pattern=r"^instant_confirm$"))
