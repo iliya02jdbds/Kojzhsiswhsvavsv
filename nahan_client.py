@@ -84,7 +84,37 @@ def nahan_add_user(username: str, volume_gb: float = None, days: int = None, ret
     raise NahanError(last_err or "خطای نامشخص در ارتباط با پنل")
 
 
-def nahan_delete_user(user_id: str) -> bool:
+def nahan_get_user(panel_user_id: str) -> dict:
+    """
+    وضعیت لحظه‌ای یه کاربر رو از پنل می‌گیره: حجم مصرف‌شده، سقف حجم، تاریخ انقضا، وضعیت، لینک اشتراک.
+    خروجی بایت‌هاست (usage.total / usage.limit) — تبدیل به گیگ رو خود بات انجام می‌ده.
+    """
+    if not NAHAN_KEY:
+        raise NahanError("NAHAN_API_KEY تنظیم نشده")
+
+    url = f"{NAHAN_BASE_URL}/{NAHAN_API_ROUTE}/api/users"
+    headers = {"Authorization": f"Bearer {NAHAN_KEY}"}
+    try:
+        resp = _SESSION.get(url, headers=headers, params={"id": panel_user_id}, timeout=15)
+    except requests.exceptions.Timeout:
+        raise NahanError("تایم‌اوت — پنل جواب نداد")
+    except requests.exceptions.ConnectionError as e:
+        raise NahanError(f"خطا در اتصال به پنل: {e}")
+
+    if resp.status_code == 404:
+        raise NahanError("این کاربر رو پنل پیدا نشد (شاید حذف شده)")
+    if resp.status_code == 401:
+        raise NahanError("توکن پنل نامعتبره (Unauthorized)")
+    if resp.status_code != 200:
+        raise NahanError(f"status={resp.status_code} body={resp.text[:200]}")
+
+    data = resp.json()
+    if not data.get("success"):
+        raise NahanError(data.get("error", "خطای نامشخص پنل"))
+    return data["user"]
+
+
+
     """حذف کاربر از پنل (برای لغو/بازگشت وجه). خطا رو می‌بلعه و False برمی‌گردونه، چون این معمولاً یه best-effort cleanup هست."""
     if not NAHAN_KEY:
         return False
